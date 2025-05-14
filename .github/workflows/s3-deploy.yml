@@ -1,0 +1,44 @@
+
+name: Deployment Workflow
+
+on:
+  push:
+    branches:
+      - develop
+      - master
+
+jobs:
+  determine_environment:
+    runs-on: ubuntu-latest
+    outputs:
+      environment_name: ${{ steps.set-env.outputs.environment_name }}
+    steps:
+      - name: Set environment based on branch
+        id: set-env
+        run: |
+          if [[ $GITHUB_REF == "refs/heads/master" ]]; then
+            echo "environment_name=prod" >> $GITHUB_OUTPUT
+          elif [[ $GITHUB_REF == "refs/heads/develop" ]]; then
+            echo "environment_name=dev" >> $GITHUB_OUTPUT
+          else
+            echo "environment_name=dev" >> $GITHUB_OUTPUT
+          fi
+
+  deploy:
+    needs: determine_environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine_environment.outputs.environment_name }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Upload ETL scripts to S3
+        uses: shallwefootball/s3-upload-action@master
+        id: s3-upload
+        with:
+          aws_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws_bucket: ${{ secrets.DATAOPS_BUCKET }}
+          source_dir: 'scripts'
+          destination_dir: 'scripts'
