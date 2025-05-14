@@ -19,9 +19,9 @@ jobs:
           if [[ $GITHUB_REF == "refs/heads/master" ]]; then
             echo "environment_name=prod" >> $GITHUB_OUTPUT
           elif [[ $GITHUB_REF == "refs/heads/develop" ]]; then
-            echo "environment_name=dev" >> $GITHUB_OUTPUT
+            echo "environment_name=develop" >> $GITHUB_OUTPUT
           else
-            echo "environment_name=dev" >> $GITHUB_OUTPUT
+            echo "environment_name=develop" >> $GITHUB_OUTPUT
           fi
 
   deploy:
