@@ -49,7 +49,7 @@ jobs:
           echo "Running code quality checks with sonarqube"
           
   deploy:
-    needs: [unit-test, code-quality]
+    needs: [unit-test, code-quality, determine_environment]
     runs-on: ubuntu-latest
     environment: ${{ needs.determine_environment.outputs.environment_name }}
     
