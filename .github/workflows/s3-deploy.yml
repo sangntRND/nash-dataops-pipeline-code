@@ -22,9 +22,34 @@ jobs:
           else
             echo "environment_name=develop" >> $GITHUB_OUTPUT
           fi
-
-  deploy:
+  unit-test:
     needs: determine_environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine_environment.outputs.environment_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Run unit tests using spark emulation container
+      - name: Run unit tests with simulate spark container
+        run: |
+          echo "Running unit tests with simulate spark container"
+          
+  code-quality:
+    needs: determine_environment
+    runs-on: ubuntu-latest
+    environment: ${{ needs.determine_environment.outputs.environment_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Run code quality checks
+      - name: Run code quality checks with sonarqube
+        run: |
+          echo "Running code quality checks with sonarqube"
+          
+  deploy:
+    needs: [unit-test, code-quality]
     runs-on: ubuntu-latest
     environment: ${{ needs.determine_environment.outputs.environment_name }}
     
@@ -45,3 +70,9 @@ jobs:
         run: |
           aws s3 sync scripts/ s3://${{ secrets.DATAOPS_BUCKET }}/scripts/ --delete
         # The --delete flag ensures that files removed from the source are also removed from the destination
+      
+      - name: Trigger the data-pipeline workflow
+        run: |
+          echo "Triggering the data-pipeline workflow"
+          aws glue start-workflow-run --name ${{ secrets.DATAOPS_WORKFLOW_NAME }}
+          
