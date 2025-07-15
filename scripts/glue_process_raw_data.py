@@ -3,16 +3,15 @@ from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
 from awsglue.context import GlueContext
 from awsglue.job import Job
-from awsglue.dynamicframe import DynamicFrame
 from pyspark.context import SparkContext
-from pyspark.sql.functions import col, to_timestamp, lit, when, year, month, dayofmonth, hour, date_format, unix_timestamp
+from pyspark.sql.functions import col, to_date, year, month, lit, regexp_replace
 
-# Initialize Glue context
+# --- Initialization ---
 args = getResolvedOptions(sys.argv, [
-    'JOB_NAME', 
+    'JOB_NAME',
     'data_bucket_name',
-    'database_name',    # Database in Glue Catalog
-    'fhvhv_table_name'  # Table name for fhvhv data in Glue Catalog
+    'database_name',
+    'fhvhv_table_name'
 ])
 
 sc = SparkContext()
@@ -21,121 +20,91 @@ spark = glueContext.spark_session
 job = Job(glueContext)
 job.init(args['JOB_NAME'], args)
 
-# Get parameters
+# --- Configuration ---
 data_bucket = args['data_bucket_name']
 database_name = args['database_name']
-fhvhv_table_name = args['fhvhv_table_name']
-processed_prefix = "processed/"
+table_name = args['fhvhv_table_name']
 raw_prefix = "raw/"
+processed_prefix = "processed/"
+
 taxi_zones_path = f"s3://{data_bucket}/{raw_prefix}taxi_zone_lookup.csv"
 output_path = f"s3://{data_bucket}/{processed_prefix}fhvhv_trips/"
 
-# No need for JDBC extraction for Parquet data
-print(f"Working with Parquet data from table {fhvhv_table_name} in database {database_name}")
-
-# Load data from Glue Data Catalog directly
-print(f"Loading FHVHV trip data from catalog: {database_name}.{fhvhv_table_name}")
-trip_dyf = glueContext.create_dynamic_frame.from_catalog(
+# --- Data Loading ---
+print(f"Loading raw data from table: {database_name}.{table_name}")
+raw_trip_dyf = glueContext.create_dynamic_frame.from_catalog(
     database=database_name,
-    table_name=fhvhv_table_name,
-    transformation_ctx="trip_dyf"
+    table_name=table_name,
+    transformation_ctx="raw_trip_dyf"
 )
+raw_trip_df = raw_trip_dyf.toDF()
 
-# Get schema information
-print(f"Table information for {database_name}.{fhvhv_table_name}:")
-schema = trip_dyf.schema()
-if schema:
-    for field in schema.fields:
-        print(f"Column: {field.name}, Type: {field.dataType}")
-else:
-    print("Schema information not available")
-
-# Convert DynamicFrame to DataFrame for data processing
-trip_df = trip_dyf.toDF()
-print("FHVHV Trip Data Schema:")
-trip_df.printSchema()
-
-print("Loading taxi zone lookup data from:", taxi_zones_path)
+print(f"Loading taxi zone lookup data from: {taxi_zones_path}")
 zones_df = spark.read.option("header", "true").csv(taxi_zones_path)
 
-# Data cleanup and transformation
-print("Performing data transformations and cleanup...")
+# --- Data Transformation ---
+pu_zones_df = zones_df.withColumnRenamed("LocationID", "PULocationID") \
+                      .withColumnRenamed("Borough", "PU_Borough") \
+                      .withColumnRenamed("Zone", "PU_Zone") \
+                      .withColumnRenamed("service_zone", "PU_service_zone")
 
-# Convert string timestamps to timestamp type and handle potential null values
-print("Converting timestamp columns...")
-trip_df = trip_df.withColumn("pickup_datetime", to_timestamp(col("pickup_datetime"))) \
-                .withColumn("dropoff_datetime", to_timestamp(col("dropoff_datetime")))
+do_zones_df = zones_df.withColumnRenamed("LocationID", "DOLocationID") \
+                      .withColumnRenamed("Borough", "DO_Borough") \
+                      .withColumnRenamed("Zone", "DO_Zone") \
+                      .withColumnRenamed("service_zone", "DO_service_zone")
 
-# Add derived time dimension columns for better analytics and partitioning
-print("Adding time dimension columns...")
-trip_df = trip_df.withColumn("pickup_year", year("pickup_datetime")) \
-                .withColumn("pickup_month", month("pickup_datetime")) \
-                .withColumn("pickup_day", dayofmonth("pickup_datetime")) \
-                .withColumn("pickup_hour", hour("pickup_datetime")) \
-                .withColumn("pickup_date", date_format("pickup_datetime", "yyyy-MM-dd"))
-
-# Join with taxi zone lookup for pickup location
-print("Joining with taxi zone data for pickup locations...")
-trip_df = trip_df.join(
-    zones_df.select(
-        col("LocationID").alias("PU_LocationID"),
-        col("Borough").alias("PU_Borough"),
-        col("Zone").alias("PU_Zone"),
-        col("service_zone").alias("PU_service_zone")
-    ),
-    trip_df["PULocationID"] == col("PU_LocationID"),
+enriched_df = raw_trip_df.join(
+    pu_zones_df,
+    raw_trip_df["PULocationID"] == pu_zones_df["PULocationID"],
     "left"
-).drop("PU_LocationID")
+).drop(pu_zones_df["PULocationID"])
 
-# Join with taxi zone lookup for dropoff location
-print("Joining with taxi zone data for dropoff locations...")
-trip_df = trip_df.join(
-    zones_df.select(
-        col("LocationID").alias("DO_LocationID"),
-        col("Borough").alias("DO_Borough"),
-        col("Zone").alias("DO_Zone"),
-        col("service_zone").alias("DO_service_zone")
-    ),
-    trip_df["DOLocationID"] == col("DO_LocationID"),
+enriched_df = enriched_df.join(
+    do_zones_df,
+    enriched_df["DOLocationID"] == do_zones_df["DOLocationID"],
     "left"
-).drop("DO_LocationID")
+).drop(do_zones_df["DOLocationID"])
 
-# Handle shared ride flags - using sr_flag from the schema
-print("Adding shared ride status column...")
-trip_df = trip_df.withColumn(
-    "shared_ride_status",
-    when(col("sr_flag") == 1, "Shared Ride")
-    .otherwise("Non-Shared Ride")
+# --- Data Validation and Filtering ---
+pre_filter_count = enriched_df.count()
+print(f"Total records after joins: {pre_filter_count}")
+
+enriched_df = enriched_df.filter(
+    col("PU_Borough").isNotNull() & col("DO_Borough").isNotNull()
 )
 
-# Add a process datetime column for data lineage tracking
-trip_df = trip_df.withColumn("processed_date", lit(spark.sql("SELECT CURRENT_TIMESTAMP").collect()[0][0]))
+post_filter_count = enriched_df.count()
+print(f"Records dropped due to invalid LocationID: {pre_filter_count - post_filter_count}")
+print(f"Total valid records to be stored: {post_filter_count}")
 
-# Calculate trip duration in minutes (for analytics purposes)
-print("Calculating trip metrics...")
-trip_df = trip_df.withColumn(
-    "trip_duration_minutes", 
-    when(
-        col("pickup_datetime").isNotNull() & col("dropoff_datetime").isNotNull(),
-        (unix_timestamp("dropoff_datetime") - unix_timestamp("pickup_datetime")) / 60
-    ).otherwise(None)
+
+# --- Data Cleaning and Partitioning ---
+df_with_partitions = enriched_df.withColumn("pickup_date", to_date(col("pickup_datetime")))
+df_with_partitions = df_with_partitions.withColumn("pickup_year", year(col("pickup_date"))) \
+                                       .withColumn("pickup_month", month(col("pickup_date")))
+
+# 1. Filter out records where partition key values are null or empty to prevent __HIVE_DEFAULT_PARTITION__
+final_df = df_with_partitions.filter(
+    col("pickup_year").isNotNull() &
+    col("pickup_month").isNotNull() &
+    col("PU_Borough").isNotNull() & (col("PU_Borough") != "") &
+    col("PU_Zone").isNotNull() & (col("PU_Zone") != "")
 )
 
-# Write processed data to S3, partitioning by year, month and borough for efficient querying
+# 2. Sanitize string-based partition columns to remove special characters
+final_df = final_df.withColumn("PU_Borough_sanitized", regexp_replace(col("PU_Borough"), r"[^a-zA-Z0-9 ]", "_")) \
+                   .withColumn("PU_Zone_sanitized", regexp_replace(col("PU_Zone"), r"[^a-zA-Z0-9 ]", "_"))
+
+print(f"Final record count after all cleaning: {final_df.count()}")
+
+# --- Data Storage ---
+# Write the processed and validated data to S3, partitioned by the sanitized columns
 print(f"Writing processed data to: {output_path}")
-trip_df.write \
+final_df.write \
     .mode("overwrite") \
-    .option("header", "true") \
-    .option("quoteAll", "true") \
-    .option("encoding", "UTF-8") \
-    .option("delimiter", ",") \
-    .partitionBy("pickup_year", "pickup_month", "PU_Borough", "PU_Zone") \
-    .csv(output_path)
+    .partitionBy("pickup_year", "pickup_month", "PU_Borough_sanitized", "PU_Zone_sanitized") \
+    .csv(output_path, header=True)
 
-# Print job statistics
-# record_count = trip_df.count()
-# print(f"Processed {record_count} FHV trip records")
-
-# Complete the job
+# --- Job Completion ---
 job.commit()
-print("FHVHV ETL job completed successfully") 
+print("Job completed successfully.")
