@@ -61,7 +61,7 @@ To enable the GitHub Actions workflow, you need to configure the following:
 
 2. **Set AWS Region** (Optional):
    - In the same "Actions" variables section, add a variable:
-     - `AWS_REGION`: Your preferred AWS region (defaults to us-east-1)
+     - `AWS_REGION`: Your preferred AWS region (defaults to ap-southeast-1)
 
 3. **Configure Bucket Name**:
    - If you need to deploy to a different S3 bucket, edit the `.github/workflows/s3-deploy.yml` file
