@@ -160,46 +160,6 @@ def main():
         cursor = conn.cursor()
         cursor.execute(ddl)
         cursor.close()
-        
-        # Create useful views
-        # views_ddl = f"""
-        # -- View for latest data
-        # CREATE OR REPLACE VIEW {args['redshift_schema']}.{args['redshift_table']}_latest AS
-        # SELECT *
-        # FROM {args['redshift_schema']}.{args['redshift_table']}
-        # WHERE DATE(load_timestamp) = (
-        #     SELECT MAX(DATE(load_timestamp)) 
-        #     FROM {args['redshift_schema']}.{args['redshift_table']}
-        # );
-
-        # -- View for borough-level aggregates
-        # CREATE OR REPLACE VIEW {args['redshift_schema']}.{args['redshift_table']}_by_borough AS
-        # SELECT 
-        #     pickup_date,
-        #     pu_borough,
-        #     COUNT(*) as trip_count,
-        #     AVG(trip_duration_minutes) as avg_trip_duration,
-        #     SUM(CASE WHEN shared_ride_status = 'Shared Ride' THEN 1 ELSE 0 END) as shared_rides
-        # FROM {args['redshift_schema']}.{args['redshift_table']}
-        # GROUP BY pickup_date, pu_borough
-        # ORDER BY pickup_date, pu_borough;
-
-        # -- View for hourly patterns
-        # CREATE OR REPLACE VIEW {args['redshift_schema']}.{args['redshift_table']}_by_hour AS
-        # SELECT 
-        #     pickup_hour,
-        #     pu_borough,
-        #     COUNT(*) as trip_count,
-        #     AVG(trip_duration_minutes) as avg_trip_duration
-        # FROM {args['redshift_schema']}.{args['redshift_table']}
-        # GROUP BY pickup_hour, pu_borough
-        # ORDER BY pickup_hour, pu_borough;
-        # """
-
-        # logger.info("Creating views...")
-        # cursor = conn.cursor()
-        # cursor.execute(views_ddl)
-        # cursor.close()
 
         conn.close()
         logger.info("Schema creation completed successfully")
